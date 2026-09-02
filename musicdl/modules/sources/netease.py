@@ -44,6 +44,10 @@ class NeteaseMusicClient(BaseMusicClient):
         self.default_parse_cookies = self.default_parse_cookies or DEFAULT_COOKIES
         self.default_download_cookies = self.default_download_cookies or DEFAULT_COOKIES
         self._initsession()
+    '''_constructuniqueworkdir'''
+    def _constructuniqueworkdir(self, keyword: str, sort_by_search_kwd_and_time: bool = True) -> str:
+        IOUtils.touchdir((work_dir := sanitize_filepath(os.path.join(self.work_dir, self.source, keyword) if sort_by_search_kwd_and_time else os.path.join(self.work_dir, self.source))))
+        return work_dir
     '''_constructsearchurls'''
     def _constructsearchurls(self, keyword: str, rule: dict = None, request_overrides: dict = None):
         # init
