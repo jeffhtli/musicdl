@@ -715,24 +715,40 @@ class NeteaseMusicClient(BaseMusicClient):
         with suppress(Exception): playlist_id, song_infos = parse_qs(urlparse(urlparse(playlist_url).fragment).query, keep_blank_values=True).get('id')[0], []
         if not playlist_id: playlist_id, song_infos = urlparse(playlist_url).path.strip('/').split('/')[-1].removesuffix('.html').removesuffix('.htm'), []
         if (not (hostname := obtainhostname(url=playlist_url))) or (not hostmatchessuffix(hostname, NETEASE_MUSIC_HOSTS)): return song_infos
-        # get tracks in playlist
-        (resp := self.post('https://music.163.com/api/v6/playlist/detail', data={'id': playlist_id}, **request_overrides)).raise_for_status()
-        tracks_in_playlist = (safeextractfromdict((playlist_result := resp2json(resp=resp)), ['playlist', 'trackIds'], []) or [])
-        # parse track by track in playlist
+        # detect album / artist / playlist and get tracks
+        fragment_path = urlparse(urlparse(playlist_url).fragment).path or urlparse(playlist_url).path
+        is_album = '/album' in fragment_path
+        is_artist = '/artist' in fragment_path
+        if is_artist:
+            (resp := self.get(f'https://music.163.com/api/v1/artist/{playlist_id}', **request_overrides)).raise_for_status()
+            source_result = resp2json(resp=resp)
+            tracks_in_playlist = safeextractfromdict(source_result, ['hotSongs'], []) or []
+            source_label, name_keys = f"artist-{playlist_id}", ['artist', 'name']
+        elif is_album:
+            (resp := self.get(f'https://music.163.com/api/v1/album/{playlist_id}', **request_overrides)).raise_for_status()
+            source_result = resp2json(resp=resp)
+            tracks_in_playlist = safeextractfromdict(source_result, ['songs'], []) or []
+            source_label, name_keys = f"album-{playlist_id}", ['album', 'name']
+        else:
+            (resp := self.post('https://music.163.com/api/v6/playlist/detail', data={'id': playlist_id}, **request_overrides)).raise_for_status()
+            source_result = resp2json(resp=resp)
+            tracks_in_playlist = (safeextractfromdict(source_result, ['playlist', 'trackIds'], []) or [])
+            source_label, name_keys = f"playlist-{playlist_id}", ['playlist', 'name']
+        # parse track by track
         with Progress(TextColumn("{task.description}"), BarColumn(bar_width=None), MofNCompleteColumn(), TimeRemainingColumn(), refresh_per_second=10) as main_process_context:
-            main_progress_id = main_process_context.add_task(f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed (0/{len(tracks_in_playlist)}) SongInfo", total=len(tracks_in_playlist))
+            main_progress_id = main_process_context.add_task(f"{len(tracks_in_playlist)} Songs Found in {source_label} >>> Completed (0/{len(tracks_in_playlist)}) SongInfo", total=len(tracks_in_playlist))
             for idx, track_info in enumerate(tracks_in_playlist):
-                if idx > 0: main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed ({idx}/{len(tracks_in_playlist)}) SongInfo")
+                if idx > 0: main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in {source_label} >>> Completed ({idx}/{len(tracks_in_playlist)}) SongInfo")
                 song_info = SongInfo(source=self.source, raw_data={'search': track_info, 'download': {}, 'lyric': {}, 'quality': MUSIC_QUALITIES[-1]})
                 song_info_flac = self._parsewiththirdpartapis(search_result=track_info, request_overrides=request_overrides)
                 lossless_quality_is_sufficient = False if (cookies := self.default_cookies or request_overrides.get('cookies')) and (cookies != DEFAULT_COOKIES) else True
                 with suppress(Exception): song_info = self._parsewithofficialapiv1(search_result=track_info, song_info_flac=song_info_flac, lossless_quality_is_sufficient=lossless_quality_is_sufficient, request_overrides=request_overrides)
                 if (song_info := song_info if song_info.with_valid_download_url else song_info_flac).with_valid_download_url: song_infos.append(song_info); continue
                 self.logger_handle.warning(f'Fail to parse track info {track_info}', disable_print=self.disable_print)
-            main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed ({idx+1}/{len(tracks_in_playlist)}) SongInfo")
+            main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in {source_label} >>> Completed ({idx+1}/{len(tracks_in_playlist)}) SongInfo")
         # post processing
-        playlist_name = legalizestring(safeextractfromdict(playlist_result, ['playlist', 'name'], None) or f"playlist-{playlist_id}")
-        song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=playlist_name)
+        source_name = legalizestring(safeextractfromdict(source_result, name_keys, None) or source_label)
+        song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=source_name)
         for song_info in song_infos:
             song_info.work_dir, episodes = work_dir, song_info.episodes if isinstance(song_info.episodes, list) else []
             for eps_info in episodes: eps_info.work_dir = sanitize_filepath(os.path.join(work_dir, f"{song_info.song_name} - {song_info.singers}")); IOUtils.touchdir(eps_info.work_dir)
